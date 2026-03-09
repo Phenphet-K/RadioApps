@@ -1,4 +1,8 @@
-URL FOR DOWNLOAD EXE STUP FILE : https://drive.google.com/file/d/1gQFCpsCOgtyv9sv1WS8xBVSWYgrHrGz7/view?usp=sharing
+update v. 1.8
+Link : https://drive.google.com/file/d/1P21ZPKw79XL3zKx1mhsYmK_k9eo05oGL/view
+
+v.1.7
+Link : https://drive.google.com/file/d/1gQFCpsCOgtyv9sv1WS8xBVSWYgrHrGz7/view?usp=sharing
 
 โปรแกรมเล่นสื่ออัตโนมัติ (Automated Media Player System)
 ออกแบบและพัฒนาโดย: นายเพ็ญเพชร ไกรทอง
