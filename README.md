@@ -32,4 +32,4 @@ RadioApp - โปรแกรมเล่นสื่ออัตโนมัต
 *   `fonts/` - ไดเรกทอรีสำหรับเก็บฟอนต์ TH Sarabun New
 *   `icon.ico` - ไอคอนของโปรแกรม
 
-*   Download Link : [Click](https://drive.google.com/file/d/14XH4kQWEaxEVqElKj85kJkyGcZ66NxOC/view?usp=sharing)
+*   Download Setup v.1.9.exe : [Click](https://drive.google.com/file/d/14XH4kQWEaxEVqElKj85kJkyGcZ66NxOC/view?usp=sharing)
