@@ -55,12 +55,7 @@ import json
 from tkinterdnd2 import DND_FILES, TkinterDnD
 try:
     import pystray
-    from PIL import Image, ImageDraw
-except ImportError:
-    pass
-
-try:
-    import pygetwindow as gw
+    from PIL import Image, ImageDraw, ImageTk
 except ImportError:
     pass
 
@@ -76,6 +71,61 @@ except ImportError as e:
     messagebox.showerror("VLC Error",
                          "ไม่สามารถโหลด VLC ได้\nกรุณาตรวจสอบความถูกต้อง")
     sys.exit(1)
+
+class VideoWindow(tk.Toplevel):
+    """หน้าต่างสำหรับแสดงผลวิดีโอ ปรับปรุงให้สลับเต็มจอกับหน้าต่างปกติได้"""
+    def __init__(self, master, title="Video Playback"):
+        super().__init__(master)
+        self.title(title)
+        self.configure(bg="black")
+        self.is_fullscreen = True
+        self.attributes("-fullscreen", True)
+        self.attributes("-topmost", True)
+        self.withdraw()
+        
+        # ยอมให้ปิดหน้าต่างได้ (จะทำการซ่อนแทน)
+        self.protocol("WM_DELETE_WINDOW", self.hide_window)
+        
+        # คีย์ลัดสำหรับหน้าต่างวิดีโอ
+        self.bind("<Escape>", self.toggle_fullscreen)
+        self.bind("<Double-Button-1>", self.toggle_fullscreen)
+        
+        # เฟรมสำหรับวิดีโอ
+        self.video_frame = tk.Frame(self, bg="black")
+        self.video_frame.pack(fill=tk.BOTH, expand=True)
+
+    def get_handle(self):
+        return self.video_frame.winfo_id()
+
+    def hide_window(self):
+        self.withdraw()
+
+    def show_window(self):
+        """แสดงหน้าต่างแบบเต็มจอและดึง Focus มาที่นี่เพื่อให้รับคีย์บอร์ดได้"""
+        self.is_fullscreen = True
+        self.attributes("-fullscreen", True)
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
+    def toggle_fullscreen(self, event=None):
+        """สลับระหว่างโหมดเต็มจอและโหมดหน้าต่างปกติ"""
+        self.is_fullscreen = not self.is_fullscreen
+        self.attributes("-fullscreen", self.is_fullscreen)
+        
+        if not self.is_fullscreen:
+            # ถ้าออกจากเต็มจอ ให้กำหนดขนาดหน้าต่างและไว้ตรงกลาง
+            self.geometry("800x450")
+            self.update_idletasks()
+            sw = self.winfo_screenwidth()
+            sh = self.winfo_screenheight()
+            x = (sw // 2) - 400
+            y = (sh // 2) - 225
+            self.geometry(f"+{x}+{y}")
+            # ยกเลิก topmost ชั่วคราวเพื่อให้เห็นโปรแกรมหลักได้ถ้าต้องการ
+            self.attributes("-topmost", False)
+        else:
+            self.attributes("-topmost", True)
 
 def load_font(font_path):
     try:
@@ -110,7 +160,11 @@ class ScrollableFrame(ttk.Frame):
 
     def on_mousewheel(self, event):
         """เลื่อน Canvas ตามการหมุนของ Mouse Wheel"""
-        widget = self.canvas.winfo_containing(event.x_root, event.y_root)
+        try:
+            widget = self.canvas.winfo_containing(event.x_root, event.y_root)
+        except KeyError:
+            widget = None
+            
         if widget:
             # เช็คว่าเราอยู่บนออบเจกต์ใน Canvas เพื่อให้สามารถเลื่อนแม้เมาส์จะทับ Label หรือปุ่มอยู่
             if str(widget).startswith(str(self.canvas)) or widget == self.canvas:
@@ -118,7 +172,7 @@ class ScrollableFrame(ttk.Frame):
 class AudioSystemApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("โปรแกรมเล่นสื่ออัตโนมัติ ออกแบบเเละพัฒนาโดย Phenphet.K")
+        self.root.title("โปรแกรมเล่นสื่ออัตโนมัติ ออกแบบเเละพัฒนาโดย นายเพ็ญเพชร ไกรทอง")
         try:
             icon_path = APPLICATION_PATH / 'icon.ico'
             if icon_path.exists():
@@ -149,9 +203,16 @@ class AudioSystemApp:
         self.font_normal = ("TH Sarabun New", 15)
         self.font_bold = ("TH Sarabun New", 17, "bold")
         self.font_header = ("TH Sarabun New", 20, "bold")
-        self.vlc_instance = vlc.Instance('--audio-filter=equalizer', '--no-xlib', '--fullscreen', '--video-on-top', '--aout=waveout')
+        
+        # ตั้งค่า VLC
+        self.vlc_instance = vlc.Instance('--audio-filter=equalizer', '--no-xlib', '--aout=waveout')
         self.main_player = self.vlc_instance.media_player_new()
         self.interrupt_player = self.vlc_instance.media_player_new()
+        
+        # สร้างหน้าต่างวิดีโอเตรียมไว้ (Toplevel)
+        self.main_video_window = VideoWindow(self.root, "Main Video")
+        self.interrupt_video_window = VideoWindow(self.root, "Interrupt Video")
+
         self.status_var = tk.StringVar(value="พร้อมใช้งาน")
         self.time_var = tk.StringVar(value="")
         self.current_directory = tk.StringVar(value="ยังไม่ได้เลือกโฟลเดอร์ หรือนำเข้าไฟล์สื่อ")
@@ -172,6 +233,15 @@ class AudioSystemApp:
         self.auto_start_var = tk.BooleanVar(value=False)
         self.stats = {"main_played": 0, "interrupt_played": 0}
         
+        # เพิ่มตัวแปรสำหรับระบบเล่นต่อ และโฟลเดอร์รายวัน (ใช้ Index 0-6 เพื่อความเสถียรทุกล็อกแคล)
+        self.last_played_file = None
+        self.last_played_time = 0
+        self.use_daily_folders = tk.BooleanVar(value=False)
+        self.daily_folders = {str(i): "" for i in range(7)} # 0=Mon, 6=Sun
+        self.day_names_eng = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        self.last_check_day_idx = datetime.datetime.now().weekday()
+        self.last_check_day = datetime.datetime.now().strftime("%A")
+
         appdata_path = Path(os.getenv('APPDATA'))
         app_settings_dir = appdata_path / "RadioSystemApp"
         app_settings_dir.mkdir(parents=True, exist_ok=True)
@@ -363,6 +433,32 @@ class AudioSystemApp:
         tree_frame = tk.Frame(parent_frame)
         tree_frame.pack(fill=tk.BOTH, expand=True)
 
+        # โหลดและแสดงโลโก้ตรงกลาง (config/logo.png)
+        try:
+            logo_path = APPLICATION_PATH / "config" / "logo.png"
+            if logo_path.exists():
+                self.logo_img = Image.open(logo_path)
+                # ปรับขนาดให้พอดีกับความสวยงาม (กว้างสูงสุด 300px)
+                max_w = 300
+                w, h = self.logo_img.size
+                if w > max_w:
+                    new_h = int(h * (max_w / w))
+                    self.logo_img = self.logo_img.resize((max_w, new_h), Image.Resampling.LANCZOS)
+                
+                self.logo_photo = ImageTk.PhotoImage(self.logo_img)
+                
+                # วางโลโก้ไว้ที่เลเยอร์หลังสุดของ Frame (จะปรากฏตรงกลางตาราง)
+                self.lbl_logo = tk.Label(tree_frame, image=self.logo_photo, bg="white")
+                self.lbl_logo.place(relx=0.5, rely=0.5, anchor='center')
+                
+                # ป้องกันไม่ให้โลโก้ขัดขวางการคลิกตาราง
+                def on_logo_click(event):
+                    # ส่งการคลิกต่อไปยัง Treeview ที่อยู่ด้านหลัง
+                    self.media_tree.focus_set()
+                self.lbl_logo.bind("<Button-1>", on_logo_click)
+        except Exception as e:
+            print(f"Warning: Could not load logo.png. Error: {e}")
+
         tree_scroll_y = tk.Scrollbar(tree_frame)
         tree_scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
         tree_scroll_x = tk.Scrollbar(tree_frame, orient=tk.HORIZONTAL)
@@ -383,6 +479,38 @@ class AudioSystemApp:
         self.media_tree.column("Duration", width=100, anchor='center')
         self.media_tree.column("Status", width=120, anchor='center')
         self.media_tree.pack(fill=tk.BOTH, expand=True)
+
+        # โหลดและแสดงโลโก้ตรงกลาง (config/logo.png) - ย้ายมาไว้หลัง pack ตารางเพื่อให้แสดงทับด้านบน
+        try:
+            logo_path = APPLICATION_PATH / "config" / "logo.png"
+            print(f"Checking for logo at: {logo_path}") # Debug path
+            if logo_path.exists():
+                self.logo_img = Image.open(logo_path)
+                # ปรับขนาดให้พอดีกับความสวยงาม (กว้างสูงสุด 300px)
+                max_w = 300
+                w, h = self.logo_img.size
+                if w > max_w:
+                    new_h = int(h * (max_w / w))
+                    self.logo_img = self.logo_img.resize((max_w, new_h), Image.Resampling.LANCZOS)
+                
+                self.logo_photo = ImageTk.PhotoImage(self.logo_img)
+                
+                # วางโลโก้ไว้บน Treeview โดยใช้ relx/rely กึ่งกลางของ tree_frame
+                self.lbl_logo = tk.Label(tree_frame, image=self.logo_photo, bg="white")
+                self.lbl_logo.place(relx=0.5, rely=0.5, anchor='center')
+                self.lbl_logo.lift() # สั่งให้ลอยทับตาราง
+                
+                # ป้องกันไม่ให้โลโก้ขัดขวางการคลิกตาราง
+                def on_logo_click(event):
+                    # ส่งการคลิกต่อไปยัง Treeview ที่อยู่ด้านหลัง
+                    self.media_tree.focus_set()
+                self.lbl_logo.bind("<Button-1>", on_logo_click)
+                print("Logo loaded successfully.")
+            else:
+                print(f"Logo not found at {logo_path}")
+        except Exception as e:
+            print(f"Warning: Could not load logo.png. Error: {e}")
+
         tree_scroll_y.config(command=self.media_tree.yview)
         tree_scroll_x.config(command=self.media_tree.xview)
         self.media_tree.drop_target_register(DND_FILES)
@@ -450,21 +578,91 @@ class AudioSystemApp:
 
     def create_dashboard_ui(self):
         dashboard_frame = tk.Frame(self.tab_dashboard, bg="white")
-        dashboard_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+        dashboard_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
         
-        title = tk.Label(dashboard_frame, text="สรุปสถิติการเล่น", font=("TH Sarabun New", 30, "bold"), bg="white", fg="#4CAF50")
-        title.pack(pady=20)
+        title = tk.Label(dashboard_frame, text="แดชบอร์ดสรุปผลเเละตั้งค่ารายวัน", font=("TH Sarabun New", 28, "bold"), bg="white", fg="#4CAF50")
+        title.pack(pady=5)
         
         stats_frame = tk.Frame(dashboard_frame, bg="white")
-        stats_frame.pack(pady=20)
+        stats_frame.pack(pady=5)
         
         self.lbl_stat_main = tk.Label(stats_frame, text="🎵 สื่อหลักที่เล่นจบไปแล้ว: 0 รอบ", font=self.font_header, bg="white")
-        self.lbl_stat_main.pack(anchor='w', pady=10)
+        self.lbl_stat_main.pack(anchor='w', pady=2)
         
         self.lbl_stat_int = tk.Label(stats_frame, text="📢 สื่อคั่นรายการที่เล่นไปแล้ว: 0 รอบ", font=self.font_header, bg="white")
-        self.lbl_stat_int.pack(anchor='w', pady=10)
+        self.lbl_stat_int.pack(anchor='w', pady=2)
         
-        tk.Label(dashboard_frame, text="(หมายเหตุ: สถิตินี้จะรีเซ็ตใหม่เมื่อปิดและเปิดโปรแกรมใหม่)", font=self.font_normal, bg="white", fg="gray").pack(side=tk.BOTTOM, pady=20)
+        # ส่วนการตั้งค่าโฟลเดอร์รายวัน
+        daily_frame = ttk.LabelFrame(dashboard_frame, text="ตั้งค่าโฟลเดอร์สื่อแยกตามวัน (จันทร์ - อาทิตย์)", style='TLabelframe')
+        daily_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # แถวเปิดใช้งาน
+        enable_frame = tk.Frame(daily_frame, bg="#f0f0f0")
+        enable_frame.pack(fill=tk.X, padx=10, pady=5)
+        tk.Checkbutton(enable_frame, text="เปิดใช้งานระบบเปลี่ยนโฟลเดอร์ตามวันอัตโนมัติ", 
+                       variable=self.use_daily_folders, font=self.font_bold, bg="#f0f0f0",
+                       command=self.check_daily_folder_change).pack(side=tk.LEFT)
+
+        # รายการวัน
+        days_thai = ["วันจันทร์", "วันอังคาร", "วันพุธ", "วันพฤหัสบดี", "วันศุกร์", "วันเสาร์", "วันอาทิตย์"]
+        current_day_idx = datetime.datetime.now().weekday()
+        
+        self.daily_row_frames = []
+        self.daily_folder_labels = {}
+        for i in range(7):
+            is_today = (i == current_day_idx)
+            row_bg = "#E8F5E9" if is_today else "#f0f0f0"
+            
+            row = tk.Frame(daily_frame, bg=row_bg)
+            row.pack(fill=tk.X, padx=10, pady=2)
+            self.daily_row_frames.append(row)
+            
+            day_text = days_thai[i] + (" (วันนี้)" if is_today else "")
+            tk.Label(row, text=f"{day_text}:", font=self.font_bold if is_today else self.font_normal, 
+                     bg=row_bg, width=15, anchor='w').pack(side=tk.LEFT)
+            
+            path_var = tk.StringVar(value=self.daily_folders.get(str(i), "ยังไม่ได้เลือก"))
+            self.daily_folder_labels[str(i)] = path_var
+            
+            tk.Label(row, textvariable=path_var, font=self.font_normal, bg="white", relief=tk.SUNKEN, anchor='w').pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+            
+            tk.Button(row, text="เลือกโฟลเดอร์", font=("TH Sarabun New", 12), bg="#2196F3", fg="white",
+                      command=lambda idx=i: self.select_daily_directory(idx)).pack(side=tk.RIGHT, padx=5)
+
+        tk.Label(dashboard_frame, text="(หมายเหตุ: ระบบจะเริ่มเล่นต่อจากเดิมหากโปรแกรมปิดตัวลงกะทันหัน)", font=self.font_normal, bg="white", fg="gray").pack(side=tk.BOTTOM, pady=5)
+
+    def select_daily_directory(self, day_idx):
+        day_name = ["จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์", "เสาร์", "อาทิตย์"][day_idx]
+        directory = filedialog.askdirectory(title=f"เลือกโฟลเดอร์สำหรับวัน{day_name}")
+        if directory:
+            self.daily_folders[str(day_idx)] = directory
+            self.daily_folder_labels[str(day_idx)].set(directory)
+            self.save_settings(silent=True)
+            # ถ้าเป็นวันปัจจุบัน ให้เปลี่ยนทันที
+            if day_idx == datetime.datetime.now().weekday():
+                self.check_daily_folder_change()
+
+    def check_daily_folder_change(self):
+        if not self.use_daily_folders.get(): 
+            return
+        
+        now = datetime.datetime.now()
+        current_day_idx = now.weekday()
+        target_dir = self.daily_folders.get(str(current_day_idx))
+        
+        print(f"Checking daily folder: Day Index {current_day_idx}, Target: {target_dir}")
+        
+        if target_dir and os.path.isdir(target_dir):
+            # เปลี่ยนโฟลเดอร์และโหลดไฟล์ใหม่
+            self.current_directory.set(target_dir)
+            self.media_list.clear()
+            self.add_files_from_directory(target_dir)
+            
+            day_name_thai = ["จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์", "เสาร์", "อาทิตย์"][current_day_idx]
+            self.status_var.set(f"สลับโฟลเดอร์อัตโนมัติ (วัน{day_name_thai}): {os.path.basename(target_dir)}")
+            print(f"Successfully switched to daily folder: {target_dir}")
+        else:
+            print(f"No folder set for day index {current_day_idx} or directory invalid.")
 
     def update_dashboard_stats(self):
         self.lbl_stat_main.config(text=f"🎵 สื่อหลักที่เล่นจบไปแล้ว: {self.stats['main_played']} รอบ")
@@ -505,9 +703,16 @@ class AudioSystemApp:
             time.sleep(1)
     def scheduler_loop(self):
         last_checked_minute = -1
+        save_counter = 0
         while not self.stop_threads:
             now = datetime.datetime.now()
             current_time = now.strftime("%H:%M")
+            current_day = now.strftime("%A")
+
+            # ตรวจสอบการเปลี่ยนวัน
+            if current_day != self.last_check_day:
+                self.last_check_day = current_day
+                self.root.after(0, self.check_daily_folder_change)
 
             if now.minute != last_checked_minute:
                 last_checked_minute = now.minute
@@ -526,15 +731,31 @@ class AudioSystemApp:
                             self.root.after(0, self.start_interrupt, entry)
                         if close_time == current_time and close_time != "00:00":
                             self.root.after(0, self.stop_interrupt)
+            
+            # บันทึกสถานะการเล่นทุก 10 วินาที เพื่อให้เล่นต่อได้ถ้าโปรแกรมปิดกะทันหัน
+            save_counter += 1
+            if save_counter >= 10:
+                save_counter = 0
+                if self.is_playing_main and self.current_media_item:
+                    self.last_played_file = self.current_media_item
+                    self.last_played_time = self.main_player.get_time()
+                    # บันทึกเงียบๆ ไม่ต้องแสดง Message
+                    self.save_settings(silent=True)
+
             time.sleep(1)
-    def play_main_media(self, event=None):
+    def play_main_media(self, event=None, resume=False):
         if self.is_playing_interrupt:
             self.status_var.set("กำลังเล่นไฟล์คั่นรายการ ไม่สามารถเล่นสื่อหลักได้")
             return
-        if self.is_playing_main:
+        if self.is_playing_main and not resume:
             self.handle_main_media_end()
             return
-        next_media_item = self.get_next_media()
+            
+        if resume and self.last_played_file and os.path.exists(self.last_played_file):
+            next_media_item = self.last_played_file
+        else:
+            next_media_item = self.get_next_media()
+
         if not next_media_item:
             self.status_var.set("ไม่มีสื่อในรายการให้เล่น")
             return
@@ -542,19 +763,30 @@ class AudioSystemApp:
             self.current_media_item = next_media_item
             media = self.vlc_instance.media_new(self.current_media_item)
             self.main_player.set_media(media)
+            
+            # ถ้าเป็นวิดีโอ ให้แสดงหน้าต่างวิดีโอที่ฝังไว้
             if self.is_video_file(self.current_media_item):
-                self.main_player.set_fullscreen(True)
+                self.main_player.set_hwnd(self.main_video_window.get_handle())
+                self.main_video_window.deiconify()
+                self.main_video_window.lift()
             else:
-                self.main_player.set_fullscreen(False)
+                self.main_video_window.withdraw()
             
-            # Fade in
-            self.main_player.audio_set_volume(0)
+            # เล่นสื่อ
             self.main_player.play()
-            self.fade_volume(self.main_player, 0, self.main_volume, duration=2.0)
             
+            if resume and self.last_played_time > 0:
+                # รอให้ VLC โหลดสื่อแป๊บนึงก่อนเลื่อนเวลา
+                self.root.after(500, lambda: self.main_player.set_time(self.last_played_time))
+                self.status_var.set(f"เล่นต่อจากเดิม: {os.path.basename(self.current_media_item)}")
+            else:
+                # Fade in เฉพาะตอนเริ่มใหม่
+                self.main_player.audio_set_volume(0)
+                self.fade_volume(self.main_player, 0, self.main_volume, duration=2.0)
+                file_name = os.path.basename(self.current_media_item)
+                self.status_var.set(f"กำลังเล่น: {file_name}")
+
             self.is_playing_main = True
-            file_name = os.path.basename(self.current_media_item)
-            self.status_var.set(f"กำลังเล่น: {file_name}")
             self.update_media_status_by_path(self.current_media_item, "▶ กำลังเล่น")
         except Exception as e:
             self.status_var.set(f"เกิดข้อผิดพลาด: {e}")
@@ -578,6 +810,7 @@ class AudioSystemApp:
     def _process_main_media_end(self):
         self.update_media_status_by_path(self.current_media_item, "✔ เล่นแล้ว")
         self.is_playing_main = False
+        self.main_video_window.withdraw() # ซ่อนหน้าต่างวิดีโอหลักเมื่อเล่นจบ
         self.stats["main_played"] += 1
         self.update_dashboard_stats()
         # ตรวจสอบว่าเล่นจบทั้งหมดแล้วหรือยัง
@@ -630,10 +863,14 @@ class AudioSystemApp:
         try:
             media = self.vlc_instance.media_new(file_path)
             self.interrupt_player.set_media(media)
+            
+            # ถ้าเป็นวิดีโอ ให้แสดงหน้าต่างวิดีโอที่ฝังไว้
             if self.is_video_file(file_path):
-                self.interrupt_player.set_fullscreen(True)
+                self.interrupt_player.set_hwnd(self.interrupt_video_window.get_handle())
+                self.interrupt_video_window.deiconify()
+                self.interrupt_video_window.lift()
             else:
-                self.interrupt_player.set_fullscreen(False)
+                self.interrupt_video_window.withdraw()
             
             # เล่นไฟล์ก่อน ค่อยตั้งระดับเสียง เพื่อป้องกัน Error ถ้าระบบเสียงยังไม่พร้อม
             self.interrupt_player.play()
@@ -656,13 +893,13 @@ class AudioSystemApp:
     def _process_interrupt_media_end(self):
         if not self.is_playing_interrupt: return
         self.is_playing_interrupt = False
+        self.interrupt_video_window.withdraw() # ซ่อนหน้าต่างวิดีโอคั่นรายการเมื่อจบ
         self.stats["interrupt_played"] += 1
         self.update_dashboard_stats()
         self.status_var.set("ไฟล์คั่นรายการเล่นจบแล้ว")
         
         # ปิดบังคับล้าง Media และหน้าต่างของ VLC โดยตรง
         self.interrupt_player.set_media(None)
-        self.close_vlc_video_windows()
         
         self.resume_main_playback()
         
@@ -673,6 +910,12 @@ class AudioSystemApp:
             self.interrupted_media_item = None
             
             self.main_player.play()
+            
+            # ถ้าสื่อหลักเป็นวิดีโอ ต้องแสดงหน้าต่างกลับมาด้วย
+            if self.is_video_file(self.current_media_item):
+                self.main_video_window.deiconify()
+                self.main_video_window.lift()
+
             # Fade in resuming media
             self.fade_volume(self.main_player, 0, self.main_volume, duration=1.5)
             self.is_playing_main = True
@@ -686,7 +929,8 @@ class AudioSystemApp:
         # ปิดหน้าต่างหน้าจอวีดีโอทุกชนิดเวลาสั่งหยุด
         self.main_player.set_media(None)
         self.interrupt_player.set_media(None)
-        self.close_vlc_video_windows()
+        self.main_video_window.withdraw()
+        self.interrupt_video_window.withdraw()
         
         self.is_playing_main = False
         self.is_playing_interrupt = False
@@ -840,10 +1084,10 @@ class AudioSystemApp:
         return file_path.lower().endswith(('.mp4', '.avi', '.mkv', '.mov'))
 
     def exit_fullscreen(self, event=None):
-        self.main_player.set_fullscreen(False)
-        self.interrupt_player.set_fullscreen(False)
+        self.main_video_window.withdraw()
+        self.interrupt_video_window.withdraw()
         return "break"
-    def save_settings(self):
+    def save_settings(self, silent=False):
         settings = {
             "main_schedule": [],
             "interrupt_schedule": [],
@@ -853,7 +1097,13 @@ class AudioSystemApp:
             "system": {
                 "minimize_to_tray": self.minimize_to_tray_var.get(),
                 "auto_start": self.auto_start_var.get(),
-                "loop_media": self.loop_media_var.get()
+                "loop_media": self.loop_media_var.get(),
+                "use_daily_folders": self.use_daily_folders.get()
+            },
+            "daily_folders": self.daily_folders,
+            "resume_state": {
+                "file": self.last_played_file,
+                "time": self.last_played_time
             }
         }
         for entry in self.main_schedule_entries:
@@ -870,10 +1120,12 @@ class AudioSystemApp:
         try:
             with open(self.settings_file, "w", encoding="utf-8") as f:
                 json.dump(settings, f, indent=4, ensure_ascii=False)
-            self.status_var.set("บันทึกการตั้งค่าสำเร็จแล้ว")
-            messagebox.showinfo("บันทึกสำเร็จ", "บันทึกการตั้งค่าเรียบร้อยแล้ว")
+            if not silent:
+                self.status_var.set("บันทึกการตั้งค่าสำเร็จแล้ว")
+                messagebox.showinfo("บันทึกสำเร็จ", "บันทึกการตั้งค่าเรียบร้อยแล้ว")
         except Exception as e:
-            messagebox.showerror("Error", f"ไม่สามารถบันทึกการตั้งค่าได้: {e}")
+            if not silent:
+                messagebox.showerror("Error", f"ไม่สามารถบันทึกการตั้งค่าได้: {e}")
     def load_settings(self):
         if not self.settings_file.exists():
             self.status_var.set("ไม่พบบันทึกการตั้งค่า")
@@ -920,20 +1172,95 @@ class AudioSystemApp:
             self.minimize_to_tray_var.set(sys_settings.get("minimize_to_tray", True))
             self.auto_start_var.set(sys_settings.get("auto_start", False))
             self.loop_media_var.set(sys_settings.get("loop_media", False))
+            self.use_daily_folders.set(sys_settings.get("use_daily_folders", False))
+
+            self.daily_folders.update(settings.get("daily_folders", {}))
+            for day, path in self.daily_folders.items():
+                if day in self.daily_folder_labels:
+                    self.daily_folder_labels[day].set(path if path else "ยังไม่ได้เลือก")
+
+            resume_state = settings.get("resume_state", {})
+            self.last_played_file = resume_state.get("file")
+            self.last_played_time = resume_state.get("time", 0)
 
             if settings.get("play_mode") == "sequential":
                 self.set_sequential_mode()
             else:
                 self.set_random_mode()
-            loaded_media = settings.get("media_list", [])
-            # ตรวจสอบว่าไฟล์ยังมีอยู่จริงหรือไม่ ก่อนจะเพิ่มกลับเข้าไปในลิสต์
-            self.media_list = [path for path in loaded_media if os.path.exists(path)]
-            if self.media_list:
-                self.refresh_media_treeview()
-                self.current_directory.set("โหลดรายการสื่อจากไฟล์บันทึกแล้ว")
+                
+            # ตรวจสอบว่าต้องเปลี่ยนโฟลเดอร์ตามวันหรือไม่
+            if self.use_daily_folders.get():
+                self.check_daily_folder_change()
+            else:
+                loaded_media = settings.get("media_list", [])
+                self.media_list = [path for path in loaded_media if os.path.exists(path)]
+                if self.media_list:
+                    self.refresh_media_treeview()
+                    self.current_directory.set("โหลดรายการสื่อจากไฟล์บันทึกแล้ว")
+            
+            # ถ้ามีประวัติการเล่นค้างอยู่ ให้ถามว่าเล่นต่อไหม
+            if self.last_played_file and os.path.exists(self.last_played_file):
+                self.root.after(1000, self.ask_to_resume)
+
             self.status_var.set("โหลดการตั้งค่าสำเร็จ")
         except Exception as e:
             messagebox.showerror("Error", f"ไม่สามารถโหลดการตั้งค่าได้ กรุณาออกจากโปรแกรมเเละเปิดใหม่อีกครั้ง: {e}")
+
+    def ask_to_resume(self):
+        if not self.last_played_file or not os.path.exists(self.last_played_file):
+            return
+
+        file_name = os.path.basename(self.last_played_file)
+        dialog = tk.Toplevel(self.root)
+        dialog.title("เล่นสื่อต่อจากเดิม")
+        dialog.geometry("450x220")
+        dialog.attributes('-topmost', True)
+        
+        # จัดตำแหน่งกึ่งกลาง
+        dialog.update_idletasks()
+        try:
+            x = self.root.winfo_x() + (self.root.winfo_width() // 2) - 225
+            y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 110
+            dialog.geometry(f"+{x}+{y}")
+        except:
+            pass
+
+        countdown = [10]
+        lbl_msg = tk.Label(dialog, text=f"พบประวัติการเล่นค้างอยู่:\n{file_name}\n\nต้องการเล่นต่อจากเดิมหรือไม่?\n(จะเริ่มเล่นอัตโนมัติใน {countdown[0]} วินาที)", font=self.font_normal)
+        lbl_msg.pack(pady=20)
+        
+        answered = [False]
+
+        def do_resume():
+            if answered[0]: return
+            answered[0] = True
+            dialog.destroy()
+            self.play_main_media(resume=True)
+            
+        def do_start_fresh():
+            if answered[0]: return
+            answered[0] = True
+            self.last_played_file = None
+            self.last_played_time = 0
+            dialog.destroy()
+            self.play_main_media(resume=False)
+            
+        btn_frame = tk.Frame(dialog)
+        btn_frame.pack(pady=10)
+        tk.Button(btn_frame, text="ใช่ (เล่นต่อ)", command=do_resume, bg="#4CAF50", fg="white", font=self.font_normal, width=15).pack(side=tk.LEFT, padx=10)
+        tk.Button(btn_frame, text="ไม่ใช่ (เริ่มใหม่)", command=do_start_fresh, bg="#F44336", fg="white", font=self.font_normal, width=15).pack(side=tk.RIGHT, padx=10)
+        
+        def update_timer():
+            if not dialog.winfo_exists() or answered[0]:
+                return
+            countdown[0] -= 1
+            if countdown[0] <= 0:
+                do_resume()
+            else:
+                lbl_msg.config(text=f"พบประวัติการเล่นค้างอยู่:\n{file_name}\n\nต้องการเล่นต่อจากเดิมหรือไม่?\n(จะเริ่มเล่นอัตโนมัติใน {countdown[0]} วินาที)")
+                dialog.after(1000, update_timer)
+                
+        dialog.after(1000, update_timer)
 
     def clear_all_settings(self):
         if messagebox.askyesno("ยืนยัน", "ต้องการลบการตั้งค่าทั้งหมดใช่หรือไม่?"):
@@ -968,6 +1295,14 @@ class AudioSystemApp:
             self.toggle_autostart()
                 
             self.set_random_mode()
+            
+            # เคลียร์โฟลเดอร์รายวัน
+            self.use_daily_folders.set(False)
+            for i in range(7):
+                self.daily_folders[str(i)] = ""
+                if str(i) in self.daily_folder_labels:
+                    self.daily_folder_labels[str(i)].set("ยังไม่ได้เลือก")
+
             self.current_directory.set("ยังไม่ได้เลือกโฟลเดอร์ หรือนำเข้าไฟล์สื่อ")
             self.calculate_total_duration()
             self.stop_all_playback()
@@ -975,16 +1310,6 @@ class AudioSystemApp:
             
             self.save_settings()
 
-    def close_vlc_video_windows(self):
-        try:
-            # ใช้ไลบรารี pygetwindow เพื่อหาหน้าต่างของ VLC ทั้งหมดแล้วสั่งปิด
-            if 'gw' in globals():
-                windows = gw.getAllWindows()
-                for window in windows:
-                    if 'VLC' in window.title and 'Direct3D' in window.title:
-                        window.close()
-        except Exception as e:
-            print(f"Error closing VLC windows: {e}")
     def set_random_mode(self):
         self.play_random_mode.set(True);
         self.update_play_mode_buttons()
@@ -1093,6 +1418,13 @@ class AudioSystemApp:
         self.stop_threads = True
         self.main_player.stop()
         self.interrupt_player.stop()
+        
+        # ทำลายหน้าต่างวิดีโอด้วย
+        if hasattr(self, 'main_video_window'):
+            self.main_video_window.destroy()
+        if hasattr(self, 'interrupt_video_window'):
+            self.interrupt_video_window.destroy()
+            
         self.root.after(0, self.root.destroy)
 
     def on_closing(self):
@@ -1111,6 +1443,13 @@ class AudioSystemApp:
         self.stop_threads = True
         self.main_player.stop()
         self.interrupt_player.stop()
+        
+        # ทำลายหน้าต่างวิดีโอด้วย
+        if hasattr(self, 'main_video_window'):
+            self.main_video_window.destroy()
+        if hasattr(self, 'interrupt_video_window'):
+            self.interrupt_video_window.destroy()
+            
         self.root.destroy()
 if __name__ == "__main__":
     fonts_dir = APPLICATION_PATH / "fonts"
